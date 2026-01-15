@@ -3,7 +3,7 @@ import torch.nn as nn
 from collections import OrderedDict
 import numpy as np
 from torchvision import transforms
-from PIL import Image
+import PIL.Image
 import scipy.ndimage as ndimage
 
 def conv_block(in_ch, out_ch, name):
@@ -74,4 +74,4 @@ def run_inference(cloudy_img, prior_img):
     # 3. Final Polish: Apply a slight local contrast enhancement to reconstructed areas
     output = np.clip(output * 1.02, 0, 1)
     
-    return Image.fromarray((output * 255).astype(np.uint8))
+    return PIL.Image.fromarray((output * 255).astype(np.uint8))
