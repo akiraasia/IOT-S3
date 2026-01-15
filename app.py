@@ -38,9 +38,9 @@ if st.sidebar.button("Fetch & Process Imagery"):
             processed = run_inference(cloudy, prior)
             
             row1 = st.columns(3)
-            row1[0].image(cloudy, caption="Real-time Scraped Imagery (Cloudy)", use_container_width=True)
-            row1[1].image(prior, caption="Temporal Prior (Last Clear Image)", use_container_width=True)
-            row1[2].image(processed, caption="Cloud-Free Output", use_container_width=True)
+            row1[0].image(cloudy, caption="Real-time Scraped Imagery (Cloudy)", width='stretch')
+            row1[1].image(prior, caption="Temporal Prior (Last Clear Image)", width='stretch')
+            row1[2].image(processed, caption="Cloud-Free Output", width='stretch')
             
             st.info("The output demonstrates the 'Prior Guessing' algorithm converging on the true terrain based on the 4+2 channel input fix.")
         else:
