@@ -3,6 +3,8 @@ import torch.nn as nn
 from collections import OrderedDict
 import numpy as np
 from torchvision import transforms
+from PIL import Image
+import scipy.ndimage as ndimage
 
 def conv_block(in_ch, out_ch, name):
     return nn.Sequential(OrderedDict([
@@ -59,7 +61,6 @@ def run_inference(cloudy_img, prior_img):
     diff = np.abs(cloudy - prior).mean(axis=-1)
     
     # Smooth the difference to create a 'Transition Zone'
-    import scipy.ndimage as ndimage
     mask = ndimage.gaussian_filter(diff, sigma=5)
     
     # Thresholding to find the 'core' cloudy areas
