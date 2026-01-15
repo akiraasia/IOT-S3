@@ -3,6 +3,8 @@ import torch.nn as nn
 from collections import OrderedDict
 import numpy as np
 from torchvision import transforms
+from PIL import Image
+import scipy.ndimage as ndimage
 
 def conv_block(in_ch, out_ch, name):
     return nn.Sequential(OrderedDict([
@@ -59,7 +61,6 @@ def run_inference(cloudy_img, prior_img):
     diff = np.abs(cloudy - prior).mean(axis=-1)
     
     # Smooth the difference to create a 'Transition Zone'
-    import scipy.ndimage as ndimage
     mask = ndimage.gaussian_filter(diff, sigma=5)
     
     # Thresholding to find the 'core' cloudy areas
@@ -68,11 +69,9 @@ def run_inference(cloudy_img, prior_img):
     
     # 2. 'Prior Guessing' Logic:
     # We 'Guess' the ground pixels from the prior where the cloudy image has low confidence (high mask)
-    # This is the Convergence of the 4+2 channels we discussed.
     output = cloudy * (1 - mask) + prior * mask
     
     # 3. Final Polish: Apply a slight local contrast enhancement to reconstructed areas
-    # This mimics the UNet's 'bottleneck' reconstruction.
     output = np.clip(output * 1.02, 0, 1)
     
     return Image.fromarray((output * 255).astype(np.uint8))

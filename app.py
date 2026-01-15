@@ -24,14 +24,14 @@ if st.sidebar.button("Fetch & Process Imagery"):
         # 2. Fetch Imagery (Cloudy and Prior)
         cloudy, prior = fetch_satellite_imagery(lat, lon, zoom)
         
-        if cloudy and prior:
+        if cloudy is not None and prior is not None:
             st.success("Data Fetched Successfully!")
             
             # Display Weather Info
             col1, col2, col3 = st.columns(3)
-            col1.metric("Cloud Cover", f"{weather['cloud_cover']}%")
-            col2.metric("Humidity", f"{weather['humidity']}%")
-            col3.metric("Pressure", f"{weather['pressure']} hPa")
+            col1.metric("Cloud Cover", f"{weather.get('cloud_cover', 0)}%")
+            col2.metric("Humidity", f"{weather.get('humidity', 0)}%")
+            col3.metric("Pressure", f"{weather.get('pressure', 0)} hPa")
             
             # 3. Perform Inference
             st.markdown("### Reconstruction Pipeline")
@@ -44,7 +44,7 @@ if st.sidebar.button("Fetch & Process Imagery"):
             
             st.info("The output demonstrates the 'Prior Guessing' algorithm converging on the true terrain based on the 4+2 channel input fix.")
         else:
-            st.error("Could not fetch imagery. Please check API settings.")
+            st.error("Could not fetch imagery. Please check your coordinates or internet connection.")
 
 else:
     st.info("Enter coordinates and click 'Fetch & Process Imagery' to start.")
