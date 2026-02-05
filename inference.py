@@ -1,77 +1,95 @@
-import torch
-import torch.nn as nn
-from collections import OrderedDict
 import numpy as np
-from torchvision import transforms
 import PIL.Image
 import scipy.ndimage as ndimage
 
-def conv_block(in_ch, out_ch, name):
-    return nn.Sequential(OrderedDict([
-        (name + "conv1", nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False)),
-        (name + "norm1", nn.BatchNorm2d(out_ch)),
-        (name + "relu1", nn.ReLU(inplace=True)),
-        (name + "conv2", nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)),
-        (name + "norm2", nn.BatchNorm2d(out_ch)),
-        (name + "relu2", nn.ReLU(inplace=True)),
-    ]))
-
-class TemporalUNet(nn.Module):
+def run_physics_inference(cloudy_img, prior_img, weather_data):
     """
-    UNet that uses a 'Prior' image as an additional input channel.
-    This implements the 'Prior Guessing' algorithm.
+    Physics-Based Cloud Removal using Atmospheric Light Intensity Adjustment.
+    
+    Theory:
+    I_res = (I_obs - I_path) / Transmission
+    
+    Where:
+    - Transmission (t) is estimated from Humidity (Water Vapor Density).
+    - I_path (Airlight) is estimated from the brightest pixels (clouds).
+    - If t < Threshold, we fallback to GPS-Prior.
     """
-    def __init__(self, in_channels=4, out_channels=3, features=16):
-        super().__init__()
-        self.enc1 = conv_block(in_channels, features, "enc1")
-        self.pool1 = nn.MaxPool2d(2, 2)
-        self.enc2 = conv_block(features, features * 2, "enc2")
-        self.pool2 = nn.MaxPool2d(2, 2)
-        self.bottleneck = conv_block(features * 2, features * 4, "bottle")
-        self.up2 = nn.ConvTranspose2d(features * 4, features * 2, kernel_size=2, stride=2)
-        self.dec2 = conv_block(features * 4, features * 2, "dec2")
-        self.up1 = nn.ConvTranspose2d(features * 2, features, kernel_size=2, stride=2)
-        self.dec1 = conv_block(features * 2, features, "dec1")
-        self.final = nn.Conv2d(features, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool1(e1))
-        b = self.bottleneck(self.pool2(e2))
-        d2 = self.up2(b)
-        d2 = torch.cat((d2, e2), dim=1)
-        d2 = self.dec2(d2)
-        d1 = self.up1(d2)
-        d1 = torch.cat((d1, e1), dim=1)
-        d1 = self.dec1(d1)
-        return torch.sigmoid(self.final(d1))
-
-def run_inference(cloudy_img, prior_img):
-    """
-    Implements a functional 'Prior Guessing' algorithm for the demo.
-    It identifies cloud contamination by comparing the cloudy image with the prior.
-    It then converges the two sources (GPS-style fix) to reconstruct the terrain.
-    """
-    # Convert PIL to Numpy
+    # 1. Prepare Data
     cloudy = np.array(cloudy_img).astype(np.float32) / 255.0
     prior = np.array(prior_img).astype(np.float32) / 255.0
     
-    # 1. Calculate the 'Confidence Map' (Detection)
-    # High difference usually indicates clouds when compared to a prior
-    diff = np.abs(cloudy - prior).mean(axis=-1)
+    temp = weather_data.get('temperature', 20)
+    humidity = weather_data.get('humidity', 50)
     
-    # Smooth the difference to create a 'Transition Zone'
-    mask = ndimage.gaussian_filter(diff, sigma=5)
+    # 2. Physics Model Parameters
+    # beta_scalt: Scattering coefficient. Higher humidity = more scattering/haze.
+    # Simple linear approximation for demo:
+    # 0.0 at 0% humidity, 2.0 at 100% humidity.
+    beta_scat = (humidity / 100.0) * 2.5 + 0.1
     
-    # Thresholding to find the 'core' cloudy areas
-    mask = np.clip((mask - 0.1) * 3, 0, 1) # Enhance contrast of the mask
-    mask = np.expand_dims(mask, axis=-1)
+    # Transmission Map (Global estimation for this tile based on physics)
+    # T(x) = e^(-beta * d(x))
+    # We assume a constant 'cloud depth' (d) for a single tile for simplicity,
+    # or we can derive d(x) from the 'Dark Channel Prior'.
     
-    # 2. 'Prior Guessing' Logic:
-    # We 'Guess' the ground pixels from the prior where the cloudy image has low confidence (high mask)
-    output = cloudy * (1 - mask) + prior * mask
+    # Let's estimate local 'Optical Depth' using the Dark Channel Prior method
+    # Dark Channel = min(RGB)
+    dark_channel = np.min(cloudy, axis=2)
     
-    # 3. Final Polish: Apply a slight local contrast enhancement to reconstructed areas
-    output = np.clip(output * 1.02, 0, 1)
+    # Atmospheric Light (A): Estimate from the top 0.1% brightest pixels in dark channel
+    num_pixels = dark_channel.size
+    num_brightest = int(max(num_pixels * 0.001, 1))
+    indices = np.argpartition(dark_channel.flatten(), -num_brightest)[-num_brightest:]
+    flat_cloudy = cloudy.reshape(-1, 3)
+    A = np.mean(flat_cloudy[indices], axis=0) # [R, G, B] of the "Cloud"
     
-    return PIL.Image.fromarray((output * 255).astype(np.uint8))
+    # avoid division by zero
+    A = np.maximum(A, 0.1) 
+    
+    # Transmission (t)
+    # Omega = 0.95 (amount of haze to keep for realism, but we want to remove it, so 1.0)
+    # We modulate omega with Humidity. High humidity = we need to remove more.
+    omega = 0.5 + (humidity / 200.0) # 0.5 to 1.0
+    
+    transmission = 1 - omega * np.min(cloudy / A, axis=2)
+    transmission = np.maximum(transmission, 0.1) # Threshold to avoid noise
+    
+    # Refine Transmission (Guided Filter substitute -> Gaussian for speed)
+    transmission = ndimage.gaussian_filter(transmission, sigma=2)
+    
+    # 3. Radiance Recovery (Inverting the Atmosphere)
+    # J = (I - A) / t + A
+    output = np.zeros_like(cloudy)
+    for c in range(3):
+        output[:, :, c] = (cloudy[:, :, c] - A[c]) / transmission + A[c]
+        
+    output = np.clip(output, 0, 1)
+    
+    # 4. GPS-Prior Fusion
+    # Where transmission is very low (Thick Clouds), the Physics model amplifies noise.
+    # We define a "Confidence" mask based on transmission.
+    # If Transmission < 0.3 -> It's a thick cloud -> Use Prior.
+    # If Transmission > 0.7 -> It's clear/hazy -> Use Restored Physics Output.
+    
+    confidence = np.expand_dims(transmission, axis=-1)
+    
+    # Soft blending
+    # Blend = Confidence * Restored + (1 - Confidence) * Prior
+    # However, we want to allow the "Restored" image to dominate where it's good,
+    # and "Prior" to take over ONLY where it's bad.
+    
+    # Enhance confidence contrast to make a sharper decision
+    weight = np.clip((confidence - 0.2) * 5, 0, 1) # Sigmoid-like transition
+    
+    final_output = output * weight + prior * (1 - weight)
+    
+    final_output = output * weight + prior * (1 - weight)
+    
+    # 5. Visual Diagnostics
+    # Return both the result and the Transmission Map (visualized as heatmap)
+    trans_map = (transmission * 255).astype(np.uint8)
+    if len(trans_map.shape) == 2:
+        trans_map = np.stack([trans_map]*3, axis=-1) # Grayscale to RGB
+        
+    return PIL.Image.fromarray((final_output * 255).astype(np.uint8)), PIL.Image.fromarray(trans_map)
+
